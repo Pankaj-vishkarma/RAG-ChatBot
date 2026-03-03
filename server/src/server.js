@@ -1,4 +1,7 @@
-require("dotenv").config();
+if (process.env.NODE_ENV !== "production") {
+  require("dotenv").config();
+}
+
 const app = require("./app");
 const connectDB = require("./config/db");
 
@@ -6,7 +9,6 @@ const PORT = process.env.PORT || 5000;
 
 /**
  * 🔥 HANDLE UNCAUGHT EXCEPTIONS (Sync Errors)
- * Example: undefined variable, coding mistake
  */
 process.on("uncaughtException", (err) => {
   console.error("💥 UNCAUGHT EXCEPTION! Shutting down...");
@@ -16,7 +18,6 @@ process.on("uncaughtException", (err) => {
 
 /**
  * 🔥 CONNECT DATABASE FIRST
- * If DB fails → do not start server
  */
 const startServer = async () => {
   try {
@@ -31,7 +32,6 @@ const startServer = async () => {
 
     /**
      * 🔥 HANDLE UNHANDLED PROMISE REJECTIONS
-     * Example: Failed API call, DB rejection
      */
     process.on("unhandledRejection", (err) => {
       console.error("💥 UNHANDLED REJECTION! Shutting down...");
