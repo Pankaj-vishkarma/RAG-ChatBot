@@ -19,7 +19,7 @@ const Sidebar = ({ closeSidebar }) => {
     if (!confirmDelete) return;
 
     try {
-      await axiosInstance.delete(`/document/${documentId}`);
+      await axiosInstance.delete(`/documents/${documentId}`);
 
       setDocuments((prev) =>
         prev.filter((doc) => doc._id !== documentId)
