@@ -1,12 +1,16 @@
 const axios = require("axios");
 
 const GEMINI_BASE_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models"; // ✅ FIXED (added /models)
+  "https://generativelanguage.googleapis.com/v1beta/models";
 
 const DEFAULT_MODEL = "gemini-embedding-001";
 
+/**
+ * 🔥 Generate Single Embedding
+ */
 const generateEmbedding = async (text) => {
   try {
+
     if (!text || typeof text !== "string") {
       const error = new Error("Valid text is required for embedding");
       error.statusCode = 400;
@@ -14,6 +18,7 @@ const generateEmbedding = async (text) => {
     }
 
     const API_KEY = process.env.GEMINI_API_KEY;
+
     if (!API_KEY) {
       const error = new Error("Gemini API key not configured");
       error.statusCode = 500;
@@ -23,13 +28,14 @@ const generateEmbedding = async (text) => {
     const model =
       process.env.GEMINI_EMBED_MODEL || DEFAULT_MODEL;
 
-    console.log("Using Embed Model:", model);
+    // Prevent extremely large text
+    const safeText = text.slice(0, 8000);
 
     const response = await axios.post(
-      `${GEMINI_BASE_URL}/${model}:embedContent?key=${API_KEY}`, // ✅ Now correct endpoint
+      `${GEMINI_BASE_URL}/${model}:embedContent?key=${API_KEY}`,
       {
         content: {
-          parts: [{ text }],
+          parts: [{ text: safeText }],
         },
       },
       {
@@ -48,11 +54,10 @@ const generateEmbedding = async (text) => {
       throw error;
     }
 
-    console.log("✅ Embedding generated. Length:", embedding.length);
-
     return embedding;
 
   } catch (error) {
+
     console.error(
       "🔥 Gemini Embedding Error:",
       error.response?.data || error.message
@@ -78,12 +83,19 @@ const generateEmbedding = async (text) => {
       error.response?.data?.error?.message ||
       "Failed to generate embedding"
     );
+
     serverError.statusCode = error.response?.status || 500;
     throw serverError;
   }
 };
 
+
+/**
+ * 🔥 Generate Embeddings for Multiple Chunks
+ * Memory safe + limited concurrency
+ */
 const generateEmbeddingsForChunks = async (chunks = []) => {
+
   if (!Array.isArray(chunks)) {
     const error = new Error("Chunks must be an array");
     error.statusCode = 400;
@@ -92,20 +104,41 @@ const generateEmbeddingsForChunks = async (chunks = []) => {
 
   const results = [];
 
-  for (const chunk of chunks) {
-    if (!chunk?.text) continue;
+  // Limit parallel API calls
+  const concurrencyLimit = parseInt(process.env.EMBED_CONCURRENCY) || 3;
 
-    try {
-      const embedding = await generateEmbedding(chunk.text);
+  for (let i = 0; i < chunks.length; i += concurrencyLimit) {
 
-      results.push({
-        text: chunk.text,
-        embedding,
-      });
+    const batch = chunks.slice(i, i + concurrencyLimit);
 
-    } catch (err) {
-      console.error("Chunk embedding failed:", err.message);
+    const promises = batch.map(async (chunk) => {
+
+      if (!chunk?.text) return null;
+
+      try {
+
+        const embedding = await generateEmbedding(chunk.text);
+
+        return {
+          text: chunk.text,
+          embedding,
+        };
+
+      } catch (err) {
+
+        console.error("Chunk embedding failed:", err.message);
+        return null;
+
+      }
+
+    });
+
+    const batchResults = await Promise.all(promises);
+
+    for (const item of batchResults) {
+      if (item) results.push(item);
     }
+
   }
 
   return results;

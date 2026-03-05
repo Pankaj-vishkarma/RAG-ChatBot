@@ -13,6 +13,7 @@ const uploadDocument = async (req, res, next) => {
   session.startTransaction();
 
   try {
+
     if (!req.file) {
       const error = new Error("No file uploaded");
       error.statusCode = 400;
@@ -47,7 +48,9 @@ const uploadDocument = async (req, res, next) => {
       throw error;
     }
 
-    // 🔥 Use env based chunk config
+    /**
+     * 🔥 Safe chunk configuration
+     */
     const chunksArray = chunkText(
       extractedText,
       parseInt(process.env.CHUNK_SIZE) || 800,
@@ -61,23 +64,37 @@ const uploadDocument = async (req, res, next) => {
       text: chunk,
     }));
 
-    // 🔥 Create document
+    /**
+     * 🔥 Create document
+     */
     const document = await documentService.createDocument(
       {
         conversationId: conversationObjectId,
         title: req.file.originalname,
         fileName: req.file.filename,
         preview: extractedText.substring(0, 2000),
-        totalChunks: limitedChunks.length,// prevent huge storage
+        totalChunks: limitedChunks.length,
         uploadedBy: req.user.id,
       },
       session
     );
 
-    // 🔥 Generate embeddings
-    const embeddings =
-      await generateEmbeddingsForChunks(formattedChunks);
+    /**
+     * 🔥 Generate embeddings safely
+     * If embedding fails → fallback (no crash)
+     */
+    let embeddings = [];
 
+    try {
+      embeddings = await generateEmbeddingsForChunks(formattedChunks);
+    } catch (embeddingError) {
+      console.error("⚠️ Embedding generation failed:", embeddingError.message);
+      embeddings = [];
+    }
+
+    /**
+     * 🔥 Prepare vector data
+     */
     const vectorData = embeddings.map((item) => ({
       conversationId: conversationObjectId,
       documentId: document._id,
@@ -85,8 +102,11 @@ const uploadDocument = async (req, res, next) => {
       embedding: item.embedding,
     }));
 
-    // 🔥 Insert in batches (memory safe)
+    /**
+     * 🔥 Insert vectors in batches
+     */
     const batchSize = 50;
+
     for (let i = 0; i < vectorData.length; i += batchSize) {
       await Vector.insertMany(
         vectorData.slice(i, i + batchSize),
@@ -105,8 +125,13 @@ const uploadDocument = async (req, res, next) => {
         totalChunks: limitedChunks.length,
       },
     });
+
   } catch (error) {
-    await session.abortTransaction();
+
+    if (session.inTransaction()) {
+      await session.abortTransaction();
+    }
+
     session.endSession();
 
     console.error("🔥 Upload Error:", error.message);
@@ -114,9 +139,11 @@ const uploadDocument = async (req, res, next) => {
   }
 };
 
+
 /* ================= GET DOCUMENTS ================= */
 const getConversationDocuments = async (req, res, next) => {
   try {
+
     const { conversationId } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(conversationId)) {
@@ -135,14 +162,17 @@ const getConversationDocuments = async (req, res, next) => {
       success: true,
       data: documents,
     });
+
   } catch (error) {
     next(error);
   }
 };
 
+
 /* ================= DELETE DOCUMENT ================= */
 const deleteDocument = async (req, res, next) => {
   try {
+
     const { documentId } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(documentId)) {
@@ -159,21 +189,26 @@ const deleteDocument = async (req, res, next) => {
       throw error;
     }
 
-    // 🔥 Delete vectors first
+    /**
+     * 🔥 Delete vectors first
+     */
     await Vector.deleteMany({
       documentId: document._id,
     });
 
-    // 🔥 Delete file safely (async)
-    const filePath = path.join(
+    /**
+     * 🔥 Safe file delete
+     */
+    const filePath = path.resolve(
       __dirname,
       "../../uploads",
       document.fileName
     );
 
-    if (fs.existsSync(filePath)) {
+    try {
+      await fs.promises.access(filePath);
       await fs.promises.unlink(filePath);
-    }
+    } catch {}
 
     await Document.deleteOne({ _id: documentId });
 
@@ -181,9 +216,12 @@ const deleteDocument = async (req, res, next) => {
       success: true,
       message: "Document deleted successfully",
     });
+
   } catch (error) {
+
     console.error("🔥 Delete Error:", error.message);
     next(error);
+
   }
 };
 

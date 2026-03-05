@@ -28,7 +28,10 @@ const ChatProvider = ({ children }) => {
         const newRes = await createConversation();
         const newConv = newRes?.data?.data;
 
-        if (!newConv?._id) return;
+        if (!newConv?._id) {
+          setLoading(false);
+          return;
+        }
 
         setConversations([newConv]);
         setActiveConversationId(newConv._id);
@@ -93,7 +96,7 @@ const ChatProvider = ({ children }) => {
 
       await loadDocuments(conversationId);
     } catch (err) {
-      console.error("Upload error:", err?.message);
+      console.error("Upload error:", err?.response?.data || err?.message);
     }
   };
 
@@ -144,7 +147,8 @@ const ChatProvider = ({ children }) => {
 
     const token = localStorage.getItem("token");
     if (!token) return;
-    if (!question?.trim() || loading) return;
+    if (!question?.trim()) return;
+    if (loading || abortControllerRef.current) return;
 
     try {
       setLoading(true);
@@ -180,6 +184,9 @@ const ChatProvider = ({ children }) => {
           ]
       );
 
+      // Abort previous request safely
+      abortControllerRef.current?.abort();
+
       abortControllerRef.current = new AbortController();
 
       const response = await fetch(
@@ -188,7 +195,7 @@ const ChatProvider = ({ children }) => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${localStorage.getItem("token")}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify({
             question,
@@ -199,26 +206,41 @@ const ChatProvider = ({ children }) => {
       );
 
       if (!response.ok || !response.body) {
-        throw new Error("Streaming failed");
+        throw new Error(`Streaming failed with status ${response.status}`);
       }
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let fullText = "";
+      let buffer = "";
+
+      let chunkCount = 0;
 
       while (true) {
+
+        if (chunkCount > 10000) {
+          console.warn("Stream safety break triggered");
+          break;
+        }
+
+        chunkCount++;
+
         const { done, value } = await reader.read();
+
         if (done) break;
 
-        const chunk = decoder.decode(value);
-        const lines = chunk
-          .split("\n")
-          .filter((line) => line.startsWith("data:"));
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop();
 
         for (const line of lines) {
+          if (!line.startsWith("data:")) continue;
+
           const data = line.replace("data:", "").trim();
 
           if (data === "[DONE]") {
+            reader.releaseLock();
             abortControllerRef.current = null;
             setLoading(false);
             return;
@@ -226,6 +248,9 @@ const ChatProvider = ({ children }) => {
 
           try {
             const parsed = JSON.parse(data);
+
+            if (!parsed?.text) continue;
+
             fullText += parsed.text;
 
             setMessages((prev) => {
@@ -233,57 +258,88 @@ const ChatProvider = ({ children }) => {
               const lastIndex = updated.length - 1;
 
               if (updated[lastIndex]?.role === "assistant") {
-                updated[lastIndex].content = fullText;
+                updated[lastIndex] = {
+                  ...updated[lastIndex],
+                  content: fullText,
+                };
               }
 
               return updated;
             });
+
           } catch (err) {
-            console.error("Stream parse error");
+            console.warn("Stream parse error:", err.message);
           }
         }
       }
+      reader.releaseLock();
     } catch (error) {
       if (error.name !== "AbortError") {
         console.error("Streaming error:", error?.message);
 
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: "assistant",
-            content:
-              "⚠️ Something went wrong. Please try again.",
-          },
-        ]);
+        setMessages((prev) => {
+          const updated = [...prev];
+          const lastIndex = updated.length - 1;
+
+          if (updated[lastIndex]?.role === "assistant") {
+            updated[lastIndex].content =
+              "⚠️ Something went wrong. Please try again.";
+          } else {
+            updated.push({
+              role: "assistant",
+              content: "⚠️ Something went wrong. Please try again.",
+            });
+          }
+
+          return updated;
+        });
       }
     } finally {
       setLoading(false);
-      abortControllerRef.current = null;
+
+      if (abortControllerRef.current) {
+        abortControllerRef.current = null;
+      }
     }
   };
 
   const stopGeneration = () => {
-    abortControllerRef.current?.abort();
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
     abortControllerRef.current = null;
     setLoading(false);
   };
 
   const regenerateLastMessage = async () => {
-  if (loading) return;
+    if (loading || messages.length < 2) return;
 
-  // last user message find karo
-  const lastUserMessage = [...messages]
-    .reverse()
-    .find((msg) => msg.role === "user");
+    const lastIndex = messages.length - 1;
 
-  if (!lastUserMessage) return;
+    // Last message assistant hona chahiye
+    if (messages[lastIndex].role !== "assistant") return;
 
-  try {
-    await sendMessage(lastUserMessage.content);
-  } catch (err) {
-    console.error("Regenerate failed:", err?.message);
+    // Last user message find karo
+    const lastUserMessage = [...messages]
+      .slice(0, lastIndex)
+      .reverse()
+      .find((msg) => msg.role === "user");
+
+    if (!lastUserMessage) return;
+
+    // Remove last assistant message
+    setMessages((prev) => {
+      const copy = [...prev];
+      if (copy[copy.length - 1]?.role === "assistant") {
+        copy.pop();
+      }
+      return copy;
+    });
+
+    if (lastUserMessage?.content) {
+      await sendMessage(lastUserMessage.content, true);
+    }
   }
-};
 
   /* ================= EFFECTS ================= */
   useEffect(() => {
@@ -304,6 +360,14 @@ const ChatProvider = ({ children }) => {
     loadMessages(activeConversationId);
     loadDocuments(activeConversationId);
   }, [activeConversationId]);
+
+  useEffect(() => {
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, []);
 
   return (
     <ChatContext.Provider

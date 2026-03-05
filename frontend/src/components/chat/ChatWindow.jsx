@@ -71,10 +71,24 @@ const ChatWindow = () => {
   const containerRef = useRef(null);
   const bottomRef = useRef(null);
 
+  const textareaRef = useRef(null);
+
+  const autoResize = () => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+
+    textarea.style.height = "auto";
+    textarea.style.height = textarea.scrollHeight + "px";
+  };
+
   /* -------------------- Auto Scroll -------------------- */
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
+    if (!containerRef.current) return;
+
+    bottomRef.current?.scrollIntoView({
+      behavior: messages.length > 1 ? "smooth" : "auto",
+    });
+  }, [messages]);
 
   useEffect(() => {
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
@@ -122,6 +136,12 @@ const ChatWindow = () => {
     }
 
     setInput("");
+
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+      textareaRef.current.style.height =
+        textareaRef.current.scrollHeight + "px";
+    }
     setSelectedFiles([]);
   }, [input, selectedFiles, sendMessage, loading, isSpeaking, isListening]);
 
@@ -151,12 +171,12 @@ const ChatWindow = () => {
     const recognition = new SpeechRecognition();
 
     recognition.continuous = false;
-    recognition.interimResults = false;
-    recognition.lang = "en-US";
+    recognition.lang = "en-IN"; // default English
+    recognition.interimResults = true;
+
+    recognition.maxAlternatives = 1;
 
     recognition.onstart = () => setIsListening(true);
-
-    recognition.onend = () => setIsListening(false);
 
     recognition.onerror = (event) => {
       console.error("Speech recognition error:", event.error);
@@ -164,7 +184,24 @@ const ChatWindow = () => {
     };
 
     recognition.onresult = (event) => {
-      const transcript = event.results?.[0]?.[0]?.transcript;
+      const result = event.results?.[event.resultIndex]?.[0];
+
+      if (!result) return;
+
+      const transcript = result.transcript.trim();
+
+      // Detect Hindi characters
+      const hindiRegex = /[\u0900-\u097F]/;
+
+      // language detection only for logging
+      const detectedLang = hindiRegex.test(transcript) ? "hi-IN" : "en-US";
+      console.log("Speech detected language:", detectedLang);
+
+      const confidence = result.confidence ?? 1;
+
+      if (confidence < 0.4) {
+        console.warn("Low confidence speech result");
+      }
       if (transcript) {
         recognitionRef.current.lastTranscript = transcript;
         setInput(transcript);
@@ -205,52 +242,113 @@ const ChatWindow = () => {
   };
 
   /* -------------------- Text To Speech -------------------- */
-  const speak = (text) => {
-    if (!text || typeof window === "undefined") return;
 
-    if (!("speechSynthesis" in window)) {
-      console.warn("Speech synthesis not supported");
-      return;
-    }
+  const cleanTextForSpeech = (text) => {
+    if (!text) return "";
+
+    return text
+      .replace(/```[\s\S]*?```/g, "")     // remove code blocks
+      .replace(/`.*?`/g, "")              // remove inline code
+      .replace(/[*>~-]/g, "")           // remove markdown symbols
+      .replace(/\[(.*?)\]\(.*?\)/g, "$1") // keep link text
+      .replace(/\n+/g, " ")               // remove line breaks
+      .trim();
+  };
+
+  const detectLanguage = (text) => {
+    const hindiRegex = /[\u0900-\u097F]/;
+    return hindiRegex.test(text) ? "hi-IN" : "en-US";
+  };
+
+  const speak = (text) => {
+
+    if (!text || typeof window === "undefined") return;
+    if (!("speechSynthesis" in window)) return;
 
     window.speechSynthesis.cancel();
 
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = "en-US";
+    const cleanedText = cleanTextForSpeech(text);
+    const detectedLang = detectLanguage(cleanedText || text);
+
+    console.log("Detected language:", detectedLang);
+    console.log("Voices:", window.speechSynthesis.getVoices());
+
+    const utterance = new SpeechSynthesisUtterance(cleanedText);
+    utterance.lang = detectedLang || "hi-IN";
     utterance.rate = 1;
     utterance.pitch = 1;
 
-    const voices = window.speechSynthesis.getVoices();
-    const preferredVoice = voices.find(
-      (voice) =>
-        voice.lang === "en-US" &&
-        voice.name.toLowerCase().includes("google")
-    );
+    const setVoiceAndSpeak = () => {
+      let voices = window.speechSynthesis.getVoices();
 
-    if (preferredVoice) {
-      utterance.voice = preferredVoice;
-    }
+      if (!voices.length) {
+        window.speechSynthesis.onvoiceschanged = () => {
+          voices = window.speechSynthesis.getVoices();
+          setVoiceAndSpeak();
+        };
+        return;
+      }
+
+      let voice = null;
+
+      if (detectedLang === "hi-IN") {
+        // If Hindi voice not available fallback to English India
+        voice =
+          voices.find((v) => v.lang === "hi-IN") ||
+          voices.find((v) => v.lang === "en-IN") ||
+          voices.find((v) => v.lang.startsWith("en")) ||
+          voices[0];
+      } else {
+        voice =
+          voices.find((v) => v.lang.toLowerCase().includes("en")) ||
+          voices[0];
+      }
+
+      if (voice) {
+        utterance.voice = voice;
+      }
+
+      window.speechSynthesis.speak(utterance);
+    };
 
     utterance.onstart = () => setIsSpeaking(true);
     utterance.onend = () => setIsSpeaking(false);
     utterance.onerror = () => setIsSpeaking(false);
 
-    window.speechSynthesis.speak(utterance);
+    setVoiceAndSpeak();
   };
 
   const stopSpeaking = () => {
-    window.speechSynthesis.cancel();
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
     setIsSpeaking(false);
   };
 
   useEffect(() => {
     return () => {
+      // 🎤 Stop Speech Recognition Safely
       if (recognitionRef.current) {
-        recognitionRef.current.stop();
+        try {
+          if (typeof recognitionRef.current.stop === "function") {
+            recognitionRef.current.onresult = null;
+            recognitionRef.current.onerror = null;
+            recognitionRef.current.onend = null;
+            recognitionRef.current.stop();
+          }
+        } catch (err) {
+          console.warn("Recognition cleanup error:", err);
+        }
+        recognitionRef.current = null;
       }
 
+      // 🔊 Stop Speech Synthesis Safely
       if (typeof window !== "undefined" && "speechSynthesis" in window) {
-        window.speechSynthesis.cancel();
+        try {
+          window.speechSynthesis.cancel();
+        } catch (err) {
+          console.warn("Speech cleanup error:", err);
+        }
       }
     };
   }, []);
@@ -261,7 +359,7 @@ const ChatWindow = () => {
       {/* ================= MESSAGES ================= */}
       <div
         ref={containerRef}
-        className="flex-1 overflow-y-auto w-full px-3 sm:px-6 md:px-10 py-6 pb-24"
+        className="flex-1 overflow-y-auto w-full px-3 sm:px-6 md:px-10 py-6"
       >
         <div className="w-full max-w-3xl mx-auto space-y-8">
 
@@ -300,14 +398,20 @@ const ChatWindow = () => {
                     </div>
 
                     <div className="mt-4 flex items-center gap-4 text-xs text-gray-400">
-                      {!loading && index === messages.length - 1 && (
-                        <button
-                          onClick={regenerateLastMessage}
-                          className="hover:text-white transition"
-                        >
-                          🔁 Regenerate
-                        </button>
-                      )}
+                      {!loading &&
+                        msg.role === "assistant" &&
+                        index === messages.length - 1 && (
+                          <button
+                            onClick={() => {
+                              if (!loading && regenerateLastMessage) {
+                                regenerateLastMessage();
+                              }
+                            }}
+                            className="hover:text-white transition"
+                          >
+                            🔁 Regenerate
+                          </button>
+                        )}
 
                       <button
                         onClick={() => handleCopy(msg.content, index)}
@@ -318,9 +422,13 @@ const ChatWindow = () => {
 
                       {/* 🔊 Speak Button */}
                       <button
-                        onClick={() =>
-                          isSpeaking ? stopSpeaking() : speak(msg.content)
-                        }
+                        onClick={() => {
+                          if (isSpeaking) {
+                            stopSpeaking();
+                          } else {
+                            speak(msg.content);
+                          }
+                        }}
                         className="hover:text-white transition"
                       >
                         {isSpeaking ? "🔇 Stop" : "🔊 Speak"}
@@ -415,12 +523,16 @@ const ChatWindow = () => {
             </label>
 
             {/* Input */}
-            <input
-              type="text"
+            <textarea
+              ref={textareaRef}
+              rows={1}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => {
+                setInput(e.target.value);
+                autoResize();
+              }}
               placeholder="Send a message..."
-              className="flex-1 bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm sm:text-base focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
+              className="flex-1 resize-none bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm sm:text-base focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all duration-150 max-h-40 overflow-y-auto scrollbar-thin"
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();

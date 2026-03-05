@@ -40,8 +40,17 @@ router.post("/stream", authMiddleware, async (req, res) => {
 
     // 🔹 Setup SSE headers
     res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
     res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+
+    req.on("close", () => {
+      console.log("Client disconnected from stream");
+    });
+
+    if (res.flushHeaders) {
+      res.flushHeaders();
+    }
 
     /* 1️⃣ Save User Message */
     await saveMessage({
@@ -90,56 +99,74 @@ router.post("/stream", authMiddleware, async (req, res) => {
             parts: [{ text: prompt }],
           },
         ],
+      },
+      {
+        timeout: 60000
       }
     );
 
     let fullText = "";
 
-    for (const chunk of response.data) {
+    for (const chunk of response.data || []) {
       const text =
-        chunk.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        chunk?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
 
       if (text) {
         fullText += text;
-        res.write(`data: ${JSON.stringify({ text })}\n\n`);
+        if (!res.writableEnded) {
+          res.write(`data: ${JSON.stringify({ text })}\n\n`);
+        }
       }
     }
 
     /* 5️⃣ Save Assistant Message */
     if (fullText.trim()) {
-      await saveMessage({
-        conversationId,
-        role: "assistant",
-        content: fullText,
-        sources: retrievedChunks.map((c) => c.text),
-      });
+      try {
+        await saveMessage({
+          conversationId,
+          role: "assistant",
+          content: fullText,
+          sources: retrievedChunks.map((c) => c.text),
+        });
+      } catch (err) {
+        console.error("Message save failed:", err.message);
+      }
     }
 
-    res.write(`data: [DONE]\n\n`);
-    res.end();
+    if (!res.writableEnded) {
+      res.write(`data: [DONE]\n\n`);
+      res.end();
+    }
   } catch (error) {
 
     /* 🔥 RATE LIMIT HANDLING */
     if (error.response?.status === 429) {
-      res.write(
-        `data: ${JSON.stringify({
-          text: "⚠️ Server busy. Please try again in a few seconds.",
-        })}\n\n`
-      );
-      res.write(`data: [DONE]\n\n`);
-      return res.end();
+      if (!res.writableEnded) {
+
+        res.write(
+          `data: ${JSON.stringify({
+            text: "⚠️ Server busy. Please try again in a few seconds.",
+          })}\n\n`
+        );
+
+        res.write(`data: [DONE]\n\n`);
+        res.end();
+      }
     }
 
     console.error("Streaming error:", error);
 
-    res.write(
-      `data: ${JSON.stringify({
-        text: "⚠️ Something went wrong. Please try again.",
-      })}\n\n`
-    );
+    if (!res.writableEnded) {
 
-    res.write(`data: [DONE]\n\n`);
-    res.end();
+      res.write(
+        `data: ${JSON.stringify({
+          text: "⚠️ Something went wrong. Please try again.",
+        })}\n\n`
+      );
+
+      res.write(`data: [DONE]\n\n`);
+      res.end();
+    }
   }
 });
 

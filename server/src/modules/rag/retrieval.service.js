@@ -13,7 +13,7 @@ const cosineSimilarity = (vecA, vecB) => {
   let normA = 0;
   let normB = 0;
 
-  for (let i = 0; i < vecA.length; i++) {
+  for (let i = 0, len = vecA.length; i < len; i++) {
     dotProduct += vecA[i] * vecB[i];
     normA += vecA[i] * vecA[i];
     normB += vecB[i] * vecB[i];
@@ -37,9 +37,8 @@ const retrieveRelevantChunks = async (
 ) => {
   try {
     if (!question) {
-      const error = new Error("Question is required");
-      error.statusCode = 400;
-      throw error;
+      console.warn("Question missing in retrieval");
+      return [];
     }
 
     if (!conversationId) {
@@ -71,10 +70,19 @@ const retrieveRelevantChunks = async (
     }
 
     // 🔹 Fetch only required fields (lean for performance)
-    const vectors = await Vector.find(
-      { conversationId: conversationObjectId },
-      { text: 1, embedding: 1 }
-    ).lean();
+    let vectors = [];
+
+    try {
+      vectors = await Vector.find(
+        { conversationId: conversationObjectId },
+        { text: 1, embedding: 1 }
+      )
+        .limit(200)
+        .lean();
+    } catch (dbError) {
+      console.error("Vector DB query failed:", dbError.message);
+      return [];
+    }
 
     if (!vectors.length) {
       return [];
@@ -84,13 +92,15 @@ const retrieveRelevantChunks = async (
     const scoredVectors = [];
 
     for (const item of vectors) {
+      if (!Array.isArray(item.embedding)) continue;
+
       const score = cosineSimilarity(
         questionEmbedding,
         item.embedding
       );
 
       // Ignore useless matches
-      if (score > 0) {
+      if (score > 0.15) {
         scoredVectors.push({
           text: item.text,
           score,
@@ -106,10 +116,12 @@ const retrieveRelevantChunks = async (
     scoredVectors.sort((a, b) => b.score - a.score);
 
     // 🔹 Safe TOP_K
-    const envTopK = parseInt(process.env.TOP_K);
-    const safeTopK = Number.isInteger(envTopK)
-      ? envTopK
-      : topK;
+    const envTopK = parseInt(process.env.TOP_K, 10);
+
+    const safeTopK =
+      Number.isInteger(envTopK) && envTopK > 0
+        ? envTopK
+        : topK;
 
     return scoredVectors.slice(0, safeTopK);
 
@@ -122,7 +134,8 @@ const retrieveRelevantChunks = async (
 
     serverError.statusCode = error.statusCode || 500;
 
-    throw serverError;
+    console.error("Retrieval fallback triggered");
+    return [];
   }
 };
 

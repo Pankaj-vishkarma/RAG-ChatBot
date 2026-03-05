@@ -1,7 +1,24 @@
+/**
+ * 🔥 Global Crash Protection
+ * Prevent server from crashing due to unhandled errors
+ */
+process.on("uncaughtException", (err) => {
+  console.error("UNCAUGHT EXCEPTION 💥");
+  console.error(err.name, err.message);
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (err) => {
+  console.error("UNHANDLED REJECTION 💥");
+  console.error(err?.name, err?.message);
+});
+
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
+const timeout = require("connect-timeout");
+
 const routes = require("./routes");
 const errorMiddleware = require("./middleware/error.middleware");
 
@@ -53,6 +70,21 @@ app.use(
     limit: process.env.MAX_JSON_SIZE || "10kb",
   })
 );
+
+/**
+ * ⏱ Request Timeout Protection
+ * Prevent hanging AI or DB requests
+ */
+app.use(timeout("60s"));
+
+/**
+ * ⛔ Halt middleware if request timed out
+ */
+function haltOnTimedout(req, res, next) {
+  if (!req.timedout) next();
+}
+
+app.use(haltOnTimedout);
 
 /**
  * 🚦 Rate Limiters (Professional Setup)

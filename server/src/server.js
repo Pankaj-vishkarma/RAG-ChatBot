@@ -8,11 +8,12 @@ const connectDB = require("./config/db");
 const PORT = process.env.PORT || 5000;
 
 /**
- * 🔥 HANDLE UNCAUGHT EXCEPTIONS (Sync Errors)
+ * 🔥 HANDLE UNCAUGHT EXCEPTIONS
  */
 process.on("uncaughtException", (err) => {
-  console.error("💥 UNCAUGHT EXCEPTION! Shutting down...");
+  console.error("💥 UNCAUGHT EXCEPTION!");
   console.error(err.name, err.message);
+  console.error(err.stack);
   process.exit(1);
 });
 
@@ -30,11 +31,14 @@ const startServer = async () => {
       );
     });
 
+    // Prevent hanging requests
+    server.setTimeout(60000);
+
     /**
      * 🔥 HANDLE UNHANDLED PROMISE REJECTIONS
      */
     process.on("unhandledRejection", (err) => {
-      console.error("💥 UNHANDLED REJECTION! Shutting down...");
+      console.error("💥 UNHANDLED REJECTION!");
       console.error(err.name, err.message);
 
       server.close(() => {
@@ -47,8 +51,21 @@ const startServer = async () => {
      */
     process.on("SIGTERM", () => {
       console.log("👋 SIGTERM RECEIVED. Shutting down gracefully");
+
       server.close(() => {
         console.log("💥 Process terminated!");
+      });
+    });
+
+    /**
+     * 🔥 CTRL+C Shutdown (Local Dev Safe)
+     */
+    process.on("SIGINT", () => {
+      console.log("👋 SIGINT RECEIVED. Shutting down gracefully");
+
+      server.close(() => {
+        console.log("💥 Server closed.");
+        process.exit(0);
       });
     });
 

@@ -12,7 +12,12 @@ const createConversation = async (userId) => {
     throw { status: 400, message: "Invalid userId" };
   }
 
-  return await Conversation.create({ userId });
+  try {
+    return await Conversation.create({ userId });
+  } catch (err) {
+    console.error("Conversation creation failed:", err.message);
+    throw { status: 500, message: "Failed to create conversation" };
+  }
 };
 
 /* ================= GET USER CONVERSATIONS ================= */
@@ -21,9 +26,14 @@ const getUserConversations = async (userId) => {
     throw { status: 400, message: "Invalid userId" };
   }
 
-  return await Conversation.find({ userId })
-    .sort({ updatedAt: -1 })
-    .lean();
+  try {
+    return await Conversation.find({ userId })
+      .sort({ updatedAt: -1 })
+      .lean();
+  } catch (err) {
+    console.error("Failed to fetch conversations:", err.message);
+    return [];
+  }
 };
 
 /* ================= DELETE CONVERSATION (TRANSACTION SAFE) ================= */
@@ -54,16 +64,17 @@ const deleteConversation = async (conversationId, userId) => {
 
     // Delete files from disk
     for (const doc of documents) {
-      const filePath = path.join(
+      const filePath = path.resolve(
         __dirname,
         "../../uploads",
         doc.fileName
       );
 
       try {
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-        }
+        try {
+          await fs.promises.access(filePath);
+          await fs.promises.unlink(filePath);
+        } catch { }
       } catch (err) {
         console.error("File deletion error:", err.message);
       }
@@ -79,7 +90,11 @@ const deleteConversation = async (conversationId, userId) => {
 
     return { success: true };
   } catch (error) {
-    await session.abortTransaction();
+
+    if (session.inTransaction()) {
+      await session.abortTransaction();
+    }
+
     session.endSession();
     throw error;
   }
@@ -95,11 +110,11 @@ const updateConversationTitle = async (conversationId, title) => {
     return null; // silently ignore bad titles
   }
 
-  const cleanTitle = title.trim().slice(0, 50);
+  const cleanTitle = title.trim().slice(0, 40);
 
   return await Conversation.findByIdAndUpdate(
     conversationId,
-    { 
+    {
       title: cleanTitle,
       updatedAt: new Date()
     },
